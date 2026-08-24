@@ -26,6 +26,23 @@ echo -e "\033[1;36m[1/4] Checking and installing dependencies...\033[0m"
 pkg update -y
 pkg install -y termux-api jq curl grep
 
+# ── Sanity check: curl must actually be able to start ──────────────
+# Partial package upgrades can leave curl linked against a newer
+# OpenSSL than installed ("cannot locate symbol SSL_set_quic_...").
+if ! curl --version >/dev/null 2>&1; then
+  echo -e "\033[1;33m[!] curl is broken (package mismatch) — attempting repair...\033[0m"
+  pkg upgrade -y
+  pkg reinstall -y curl openssl libngtcp2 2>/dev/null || pkg reinstall -y curl openssl
+
+  if ! curl --version >/dev/null 2>&1; then
+    echo -e "\033[1;31m[!] Automatic repair failed. Run these manually, then re-run install.sh:\033[0m"
+    echo "    pkg update -y && pkg upgrade -y"
+    echo "    pkg reinstall -y curl openssl libngtcp2"
+    exit 1
+  fi
+  echo -e "\033[1;32m✓ curl repaired\033[0m"
+fi
+
 echo -e "\033[1;36m[2/4] Setting up directories...\033[0m"
 mkdir -p "$DIR"
 
