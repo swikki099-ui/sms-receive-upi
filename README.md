@@ -9,16 +9,16 @@ Turn any Android phone into an automated UPI Payment Interceptor and gateway nod
 Open the **Termux** app on your Android phone and paste this single command:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/<YOUR_GITHUB_USER>/<REPO_NAME>/main/termux-forwarder/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/swikki099-ui/sms-receive-upi/main/termux-forwarder/install.sh)
 ```
 
-*(Replace `<YOUR_GITHUB_USER>/<REPO_NAME>` with your GitHub repo details after pushing)*
+
 
 Or if copying directly onto the device:
 ```bash
 pkg update && pkg install -y git
-git clone https://github.com/<YOUR_GITHUB_USER>/<REPO_NAME>.git
-cd <REPO_NAME>/termux-forwarder
+git clone https://github.com/swikki099-ui/sms-receive-upi.git
+cd sms-receive-upi
 chmod +x install.sh
 ./install.sh
 ```
