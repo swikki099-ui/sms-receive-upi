@@ -46,15 +46,40 @@ chmod +x install.sh
 
 ## 🕹 Manual Commands
 
-- **Start interceptor manually**:
+After installation, these commands work from **any directory** (installed to `$PREFIX/bin`):
+
+- **Start interceptor**:
   ```bash
-  ~/openpayupi-termux/start.sh
+  start.sh
   ```
 - **Simulate / Test a payment SMS**:
   ```bash
-  ~/openpayupi-termux/test-sms.sh
+  test-sms.sh
   ```
 - **Edit gateway settings**:
   ```bash
   nano ~/openpayupi-termux/config.env
   ```
+
+> Prefer the full paths? They still work: `~/openpayupi-termux/start.sh`
+
+---
+
+## 🔧 Troubleshooting
+
+### Device not showing as ONLINE in the Admin Dashboard
+The device sends a heartbeat every **30 seconds**; the dashboard marks it OFFLINE after **90 seconds** of silence. If it never appears:
+
+1. **Verify your Device Secret is active** — Admin Panel → API Keys → your DEVICE key must not be revoked.
+2. **Test connectivity** from Termux:
+   ```bash
+   source ~/openpayupi-termux/config.env
+   curl -i --max-time 15 -X POST "$GATEWAY_URL/api/v1/device/heartbeat" \
+     -H "Content-Type: application/json" \
+     -H "X-Device-Secret: $DEVICE_SECRET" \
+     -d "{\"deviceName\": \"$DEVICE_NAME\", \"metadata\": {\"battery\": 100}}"
+   ```
+   A `200 OK` response means telemetry works — refresh the dashboard within 90 seconds.
+3. `401 Unauthorized` → wrong or revoked `DEVICE_SECRET` in `config.env`.
+4. Connection refused / timeout → check `GATEWAY_URL` (no trailing slash) and that the gateway is publicly reachable.
+5. Keep the Termux session alive: disable battery optimization for Termux (see Prerequisites) and use `start.sh` (it acquires a wake lock).
