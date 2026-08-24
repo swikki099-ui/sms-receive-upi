@@ -67,6 +67,17 @@ After installation, these commands work from **any directory** (installed to `$P
 
 ## 🔧 Troubleshooting
 
+### `CANNOT LINK EXECUTABLE "curl": cannot locate symbol "SSL_set_quic_tls_transport_params"...`
+Your Termux packages are out of sync — curl's HTTP/3 library (`libngtcp2`) needs a newer OpenSSL than the one installed. Fix by realigning all packages:
+
+```bash
+pkg update -y && pkg upgrade -y
+pkg reinstall -y curl openssl libngtcp2
+curl --version   # must print a version banner
+```
+
+Then re-run the connectivity test or `start.sh`. (Recent versions of install.sh detect and auto-repair this during setup.)
+
 ### Device not showing as ONLINE in the Admin Dashboard
 The device sends a heartbeat every **30 seconds**; the dashboard marks it OFFLINE after **90 seconds** of silence. If it never appears:
 
