@@ -70,7 +70,7 @@ while true; do
   # ── Send Heartbeat every 30 seconds (every 6 loops of 5s) ───
   if [ "$HB_COUNTER" -le 0 ]; then
     BATTERY=$(get_battery)
-    curl -s -X POST "$GATEWAY_URL/api/v1/device/heartbeat" \
+    curl -s --max-time 10 -X POST "$GATEWAY_URL/api/v1/device/heartbeat" \
       -H "Content-Type: application/json" \
       -H "X-Device-Secret: $DEVICE_SECRET" \
       -d "{\"deviceName\": \"$DEVICE_NAME\", \"metadata\": {\"battery\": $BATTERY}}" > /dev/null 2>&1 || true
@@ -92,8 +92,8 @@ while true; do
       continue
     fi
 
-    # Check if already processed
-    if grep -q "^$SMS_ID$" "$PROCESSED_FILE" 2>/dev/null; then
+    # Check if already processed (literal match, no regex interpretation)
+    if grep -qxF "$SMS_ID" "$PROCESSED_FILE" 2>/dev/null; then
       continue
     fi
 
@@ -101,16 +101,19 @@ while true; do
     LOWER_BODY=$(echo "$BODY" | tr '[:upper:]' '[:lower:]')
     if echo "$LOWER_BODY" | grep -qE "upi|credited|received|deposited|vpa|utr|inr|rs\.?"; then
       
-      # Extract 12-digit numeric UTR or alphanumeric reference
-      UTR=$(echo "$BODY" | grep -oP '(?i)(?:utr[:\s#]*|ref(?:erence)?[:\s#]*|txn[:\s#]*|id[:\s#]*|\b)(\d{12})\b' | grep -oE '[0-9]{12}' | head -n 1)
+      # Extract 12-digit UTR preceded by a reference label (utr/ref/txn)
+      UTR=$(echo "$BODY" | grep -oiP '\b(?:utr|ref(?:erence)?(?:\s*no)?|txn|upi\s*ref)\b[ :#.\/\-]*([0-9]{12})\b' | grep -oE '[0-9]{12}' | head -n 1)
 
-      # Fallback: any 12 digit number
+      # Fallback: any standalone 12 digit number
       if [ -z "$UTR" ]; then
         UTR=$(echo "$BODY" | grep -oE '\b[0-9]{12}\b' | head -n 1)
       fi
 
-      # Extract Amount (supports: Rs. 100.05, INR 50.00, Rs 500, ₹120.45, credited by 200.00)
-      AMOUNT=$(echo "$BODY" | grep -oP '(?i)(?:rs\.?|inr|₹|credited\s+by|received\s+rs\.?)\s*([0-9,]+(?:\.[0-9]{1,2})?)' | grep -oP '[0-9]+(?:\.[0-9]{1,2})?' | head -n 1 | tr -d ',')
+      # Extract Amount (supports: Rs. 100.05, INR 50.00, Rs 500, ₹120.45,
+      # credited by 200.00). Match the full currency+amount token first,
+      # THEN strip thousands separators — otherwise comma-formatted
+      # amounts like 1,50,000 would be truncated at the first group.
+      AMOUNT=$(echo "$BODY" | grep -oP '(?i)\b(?:rs\.?|inr\b|₹|credited\s+by\s+|received\s+)\s*[0-9][0-9,]*(?:\.[0-9]{1,2})?' | head -n 1 | tr -d ',' | grep -oE '[0-9]+(\.[0-9]{1,2})?' | head -n 1)
 
       if [ -n "$AMOUNT" ] && [ -n "$UTR" ]; then
         echo -e "${YELLOW}[UPI DETECTED]${NC} Amount: ₹$AMOUNT | UTR: $UTR | Sender: $SENDER"
@@ -123,22 +126,31 @@ while true; do
           --arg dev "$DEVICE_NAME" \
           '{amount: ($amt | tonumber), utr: $utr, rawText: $raw, deviceName: $dev}')
 
-        RES=$(curl -s -w "\n%{http_code}" -X POST "$GATEWAY_URL/api/v1/webhook/sms" \
+        RES=$(curl -s --max-time 15 -w "\n%{http_code}" -X POST "$GATEWAY_URL/api/v1/webhook/sms" \
           -H "Content-Type: application/json" \
           -H "X-Device-Secret: $DEVICE_SECRET" \
           -d "$PAYLOAD")
 
         HTTP_CODE=$(echo "$RES" | tail -n 1)
-        RES_BODY=$(echo "$RES" | head -n -1)
+        RES_BODY=$(echo "$RES" | sed '$d')
 
-        if [ "$HTTP_CODE" -eq 200 ]; then
-          echo -e "${GREEN}[PAID CONFIRMED]${NC} Order reconciled successfully: $RES_BODY"
-        else
-          echo -e "${RED}[GATEWAY RESPONSE ${HTTP_CODE}]${NC} $RES_BODY"
-        fi
-
-        # Mark SMS as processed
-        echo "$SMS_ID" >> "$PROCESSED_FILE"
+        case "$HTTP_CODE" in
+          200)
+            echo -e "${GREEN}[PAID CONFIRMED]${NC} Order reconciled successfully: $RES_BODY"
+            echo "$SMS_ID" >> "$PROCESSED_FILE"
+            ;;
+          4*)
+            # Permanent rejection (invalid body, auth, no matching order,
+            # conflict) — retrying will not help, so record and move on.
+            echo -e "${RED}[GATEWAY RESPONSE ${HTTP_CODE}]${NC} $RES_BODY"
+            echo "$SMS_ID" >> "$PROCESSED_FILE"
+            ;;
+          *)
+            # Transient failure (5xx / timeout / network error). Do NOT
+            # record the SMS so it is retried on the next poll cycle.
+            echo -e "${RED}[TRANSIENT FAILURE ${HTTP_CODE}]${NC} Will retry: $RES_BODY"
+            ;;
+        esac
       fi
     fi
 
@@ -196,6 +208,21 @@ exec "$DIR/listener.sh"
 EOF
 chmod +x "$DIR/start.sh"
 
+# ── Register global commands so `start.sh` / `test-sms.sh` work from
+#    any directory (Termux puts $PREFIX/bin on PATH) ────────────────
+BIN_DIR="${PREFIX}/bin"
+mkdir -p "$BIN_DIR"
+
+for CMD in start.sh test-sms.sh; do
+  cat << EOF > "$BIN_DIR/$CMD"
+#!/data/data/com.termux/files/usr/bin/bash
+# OpenPayUPI launcher — installed by install.sh
+exec "$DIR/$CMD" "\$@"
+EOF
+  chmod +x "$BIN_DIR/$CMD"
+done
+echo -e "\033[1;32m✓ Global commands installed: start.sh, test-sms.sh\033[0m"
+
 # Setup auto-start on boot (if termux-boot installed)
 BOOT_DIR="$HOME/.termux/boot"
 if [ -d "$BOOT_DIR" ]; then
@@ -210,7 +237,9 @@ echo "  OpenPayUPI Termux Setup Complete!"
 echo "============================================================"
 echo -e "\033[0m"
 echo "To start listening for payments right now, run:"
-echo -e "  \033[1;33m$DIR/start.sh\033[0m"
+echo -e "  \033[1;33mstart.sh\033[0m"
+echo ""
+echo "(works from any directory — test with: test-sms.sh)"
 echo ""
 echo "Important: Ensure Termux:API app is installed on Android"
 echo "and SMS permissions are granted."
